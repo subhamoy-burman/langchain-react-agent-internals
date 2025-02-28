@@ -1,14 +1,23 @@
 import os
+from typing import Union
 from dotenv import load_dotenv
 from langchain.agents import tool
 from langchain.prompts import PromptTemplate
-import langchain.tools.render as render_text_description
+from langchain.tools.render import render_text_description
 from langchain_openai import AzureChatOpenAI
+from langchain.agents.output_parsers import ReActSingleInputOutputParser  # Corrected import
+from langchain.schema import AgentAction, AgentFinish
+from langchain.agents.format_scratchpad import format_log_to_str
+
+
 load_dotenv()
 
 
 @tool
 def get_text_length(text:str) -> int:
+  """
+  Calculate the length of the given text after stripping any leading or trailing quotes and newlines.
+  """
   text = text.strip("'\n").strip('"')
   return len(text)
 
@@ -37,7 +46,7 @@ if __name__ == '__main__':
     Begin!
 
     Question: {input}
-    Thought:
+    Thought: {agent_scratchpad}
     """
   
   prompt = PromptTemplate.from_template(template=template).partial(
@@ -46,9 +55,45 @@ if __name__ == '__main__':
 
   llm = AzureChatOpenAI(
         temperature=0,
+        stop=["\nObservation"],
         openai_api_key=os.environ['OPENAI_API_KEY'],
         openai_api_version="2024-08-01-preview",  # Specify API version
         azure_endpoint=os.environ['OPENAI_API_BASE'],
         azure_deployment="gpt-4o",
         model="gpt-4o"
     )
+  
+  intermediate_steps = []
+
+  
+  
+  agent = {"input": lambda x:x["input"], 
+            "agent_scratchpad":  lambda x: format_log_to_str(x["agent_scratchpad"])
+           } | prompt | llm | ReActSingleInputOutputParser()
+
+  agent_step: Union[AgentAction,AgentFinish] = agent.invoke(
+     input={"input":"What is the length of the text 'Smelly Cat'?", "agent_scratchpad":intermediate_steps})
+
+  print(agent_step)
+
+  if(isinstance(agent_step, AgentAction)):
+    tool_name = agent_step.tool
+    def find_tool_by_name(tools, name):
+        for tool in tools:
+            if tool.name == name:
+                return tool
+        raise ValueError(f"Tool with name {name} not found")
+
+    tool_to_use = find_tool_by_name(tools, tool_name)
+    tool_input = agent_step.tool_input
+    observation = tool_to_use.func(str(tool_input))
+    print(observation)
+    intermediate_steps.append((agent_step, str(observation)))
+
+  agent_step: Union[AgentAction,AgentFinish] = agent.invoke(
+     input={"input":"What is the length of the text 'Smelly Cat'?", "agent_scratchpad":intermediate_steps})
+
+  print(agent_step)
+
+  if isinstance(agent_step, AgentFinish):
+    print(agent_step.return_values)    
